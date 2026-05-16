@@ -1,20 +1,23 @@
 # ── Detect Python interpreter (prefer .venv) ────────────────────
 
-PYTHON := $(shell [ -f .venv/bin/python ] && echo .venv/bin/python || echo python3)
+PYTHON := $(if $(wildcard .venv/bin/python),$(CURDIR)/.venv/bin/python,python3)
 
 # ── PyPI build/publish ──────────────────────────────────────────
 
 PYPI_BUILD   = build-pypi
 PKG_DIR      = $(PYPI_BUILD)/deepseek_proxy
 
-.PHONY: pypi-build pypi-publish pypi-clean
+.PHONY: pypi-setup pypi-build pypi-publish pypi-clean
+
+pypi-setup:
+	$(PYTHON) -m pip install build twine
 
 pypi-build: $(PYPI_BUILD)/dist
 	@echo "✓ PyPI package built at $(PYPI_BUILD)/dist/"
 
 $(PYPI_BUILD)/dist: $(PKG_DIR)/__init__.py $(PKG_DIR)/__main__.py
 	cp pyproject.toml README.md $(PYPI_BUILD)/
-	cd $(PYPI_BUILD) && $(PYTHON) -m build --outdir dist
+	$(PYTHON) -m build $(PYPI_BUILD) --outdir $(PYPI_BUILD)/dist
 	@touch $@
 
 $(PKG_DIR):
