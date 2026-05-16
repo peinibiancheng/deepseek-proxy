@@ -137,6 +137,10 @@ curl -X POST http://127.0.0.1:8787/v1/responses \
 
 ## Configure Claude Code
 
+Claude Code can be configured to use the proxy in two ways.
+
+### Option A: Proxy config (simpler)
+
 Add to `~/.claude/settings.local.json`:
 
 ```json
@@ -148,7 +152,48 @@ Add to `~/.claude/settings.local.json`:
 }
 ```
 
-Set the `DEEPSEEK_API_KEY` environment variable.
+This tells Claude Code to route all requests through the proxy URL and use the specified model.
+
+### Option B: Model provider config
+
+Add to `~/.codex/config.toml`:
+
+```toml
+model = "deepseek-v4-flash"
+model_provider = "deepseek"
+
+[model_providers.deepseek]
+name = "DeepSeek"
+base_url = "http://127.0.0.1:8787/v1"
+env_key = "DEEPSEEK_API_KEY"
+wire_api = "responses"
+```
+
+This registers DeepSeek as a custom model provider, making it selectable alongside other providers.
+
+### Environment Variable
+
+Regardless of which option you choose, set the API key:
+
+```bash
+export DEEPSEEK_API_KEY=sk-your-actual-key-here
+```
+
+The proxy reads this from the environment and passes it as the `Authorization` header to DeepSeek's API.
+
+### Verification
+
+Run Claude Code and send a message:
+
+```bash
+codex "hello"
+```
+
+You should see a response from the DeepSeek model. Check the proxy logs for details:
+
+```bash
+tail -f /tmp/ds_proxy.log
+```
 
 ---
 
@@ -275,6 +320,10 @@ curl -X POST http://127.0.0.1:8787/v1/responses \
 
 ## 配置 Claude Code
 
+有两种方式让 Claude Code 使用代理。
+
+### 方式 A：代理配置（更简单）
+
 添加到 `~/.claude/settings.local.json`：
 
 ```json
@@ -286,7 +335,48 @@ curl -X POST http://127.0.0.1:8787/v1/responses \
 }
 ```
 
-设置环境变量 `DEEPSEEK_API_KEY`。
+这告诉 Claude Code 将所有请求通过代理 URL 路由，并使用指定模型。
+
+### 方式 B：模型提供商配置
+
+添加到 `~/.codex/config.toml`：
+
+```toml
+model = "deepseek-v4-flash"
+model_provider = "deepseek"
+
+[model_providers.deepseek]
+name = "DeepSeek"
+base_url = "http://127.0.0.1:8787/v1"
+env_key = "DEEPSEEK_API_KEY"
+wire_api = "responses"
+```
+
+这将 DeepSeek 注册为自定义模型提供商，可以在多个提供商之间切换选择。
+
+### 环境变量
+
+无论选择哪种方式，都需要设置 API 密钥：
+
+```bash
+export DEEPSEEK_API_KEY=sk-your-actual-key-here
+```
+
+代理从环境变量读取密钥，并将其作为 `Authorization` 头传递给 DeepSeek API。
+
+### 验证
+
+运行 Claude Code 发送消息：
+
+```bash
+codex "hello"
+```
+
+你应该能看到来自 DeepSeek 模型的响应。查看代理日志获取详情：
+
+```bash
+tail -f /tmp/ds_proxy.log
+```
 
 ---
 
