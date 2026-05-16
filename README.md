@@ -113,22 +113,43 @@ On error, the proxy emits a single `response.error` event and stops.
 - Python 3.8+
 - A DeepSeek API key
 
-### Installation
+### Install from PyPI (recommended)
 
 ```bash
-git clone <repo-url>
+pip install deepseek-proxy
+```
+
+### Or run from source
+
+```bash
+git clone https://github.com/peinibiancheng/deepseek-proxy
 cd deepseek-proxy
-pip install flask requests uvicorn asgiref
+pip install -r requirements.txt
 ```
 
-### Run
+### Usage
 
 ```bash
+# Set your API key
 export DEEPSEEK_API_KEY=sk-your-key-here
-python ds_proxy.py
+
+# Start proxy (foreground)
+deepseek-proxy
+
+# Or start as a daemon (background)
+deepseek-proxy start --daemon
+
+# Stop the daemon
+deepseek-proxy stop
+
+# Restart
+deepseek-proxy restart
+
+# Custom host/port
+deepseek-proxy --host 0.0.0.0 --port 8080 start --daemon
 ```
 
-The proxy starts on `http://127.0.0.1:8787`.
+The proxy listens on `http://127.0.0.1:8787` by default.
 
 ### Verify
 
@@ -300,22 +321,43 @@ DeepSeek Proxy 是一个单文件 Flask 应用，充当 codex 和 DeepSeek API �
 - Python 3.8+
 - DeepSeek API 密钥
 
-### 安装
+### 从 PyPI 安装（推荐）
 
 ```bash
-git clone <repo-url>
+pip install deepseek-proxy
+```
+
+### 或从源码运行
+
+```bash
+git clone https://github.com/peinibiancheng/deepseek-proxy
 cd deepseek-proxy
-pip install flask requests uvicorn asgiref
+pip install -r requirements.txt
 ```
 
-### 运行
+### 使用
 
 ```bash
+# 设置 API 密钥
 export DEEPSEEK_API_KEY=sk-your-key-here
-python ds_proxy.py
+
+# 启动代理（前台）
+deepseek-proxy
+
+# 或以后台守护进程方式启动
+deepseek-proxy start --daemon
+
+# 停止守护进程
+deepseek-proxy stop
+
+# 重启
+deepseek-proxy restart
+
+# 自定义地址和端口
+deepseek-proxy --host 0.0.0.0 --port 8080 start --daemon
 ```
 
-代理启动在 `http://127.0.0.1:8787`。
+代理默认监听 `http://127.0.0.1:8787`。
 
 ### 验证
 

@@ -1,4 +1,7 @@
 import os
+import sys
+import signal
+import argparse
 from flask import Flask, request, Response, jsonify
 import requests
 import json
@@ -354,11 +357,11 @@ def get_model(model_id):
     logger.info(f"=== GET /v1/models/{model_id} {dict(request.args)} ===")
     return jsonify({**_MODEL_INFO, "id": model_id})
 
-def main():
-    """Entry point for CLI (`deepseek-proxy` command or `python -m deepseek_proxy`)."""
+def run_server(host="127.0.0.1", port=8787):
+    """Start the proxy server (blocking)."""
     logger.info("=" * 50)
     logger.info("DeepSeek Proxy 启动")
-    logger.info(f"监听地址: http://127.0.0.1:8787")
+    logger.info(f"监听地址: http://{host}:{port}")
     logger.info(f"DeepSeek API: {DEEPSEEK_CHAT_URL}")
     logger.info(f"DEEPSEEK_API_KEY 已设置: {bool(os.environ.get('DEEPSEEK_API_KEY'))}")
     logger.info("=" * 50)
@@ -369,13 +372,93 @@ def main():
             raise ImportError("asgiref 未安装")
         uvicorn.run(
             asgi_app,
-            host="127.0.0.1",
-            port=8787,
+            host=host,
+            port=port,
             log_level="info",
         )
     except ImportError as e:
         logger.warning(f"ASGI 依赖未安装 ({e})，回退到 Flask 开发服务器")
-        app.run(host="127.0.0.1", port=8787, threaded=True)
+        app.run(host=host, port=port, threaded=True)
+
+
+PID_FILE = "/tmp/deepseek-proxy.pid"
+
+
+def daemonize():
+    """Fork into background and write PID file."""
+    pid = os.fork()
+    if pid > 0:
+        # Parent process exits
+        sys.exit(0)
+    # Child continues
+    os.setsid()
+    # Second fork to fully detach
+    pid = os.fork()
+    if pid > 0:
+        sys.exit(0)
+    # Write PID file
+    with open(PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+
+
+def cmd_start(args):
+    if args.daemon:
+        daemonize()
+    run_server(host=args.host, port=args.port)
+
+
+def cmd_stop(args):
+    try:
+        with open(PID_FILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, signal.SIGTERM)
+        os.remove(PID_FILE)
+        print(f"✓ DeepSeek Proxy stopped (PID {pid})")
+    except FileNotFoundError:
+        print("DeepSeek Proxy is not running (no PID file found)")
+        sys.exit(1)
+    except ProcessLookupError:
+        os.remove(PID_FILE)
+        print("DeepSeek Proxy was not running (stale PID file removed)")
+        sys.exit(1)
+
+
+def cmd_restart(args):
+    try:
+        cmd_stop(args)
+    except SystemExit:
+        pass
+    args.daemon = True
+    cmd_start(args)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="DeepSeek Proxy — translate Responses API ↔ Chat Completions API",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8787, help="Bind port (default: 8787)")
+
+    sub = parser.add_subparsers(dest="command")
+
+    start_parser = sub.add_parser("start", help="Start the proxy (default)")
+    start_parser.add_argument("--daemon", "-d", action="store_true", help="Run in background")
+    start_parser.set_defaults(func=cmd_start)
+
+    stop_parser = sub.add_parser("stop", help="Stop the running proxy")
+    stop_parser.set_defaults(func=cmd_stop)
+
+    restart_parser = sub.add_parser("restart", help="Restart the proxy")
+    restart_parser.set_defaults(func=cmd_restart)
+
+    args = parser.parse_args()
+
+    if args.command is None:
+        # No subcommand: foreground start
+        run_server(host=args.host, port=args.port)
+    else:
+        args.func(args)
+
 
 if __name__ == "__main__":
     main()
