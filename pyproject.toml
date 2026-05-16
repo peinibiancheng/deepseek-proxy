@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepseek-proxy"
-version = "0.1.7"
+version = "0.1.8"
 description = "Translate OpenAI Responses API ↔ DeepSeek Chat Completions API for codex"
 readme = "README.md"
 license = "MIT"
@@ -15,7 +15,7 @@ dependencies = [
     "uvicorn>=0.27",
     "asgiref>=3.7",
 ]
-keywords = ["deepseek", "claude-code", "codex", "proxy", "responses-api"]
+keywords = ["deepseek",  "codex", "proxy", "responses-api"]
 authors = [
     { name = "peinibiancheng" },
 ]

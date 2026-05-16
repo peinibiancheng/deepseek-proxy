@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# 配置日志格式和级别
+# Logging configuration
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -24,7 +24,7 @@ logging.basicConfig(
 logger.setLevel(logging.DEBUG)
 DEEPSEEK_CHAT_URL = "https://api.deepseek.com/v1/chat/completions"
 
-# ASGI 包装（供 uvicorn 使用）
+# ASGI wrapper for uvicorn
 try:
     from asgiref.wsgi import WsgiToAsgi
     asgi_app = WsgiToAsgi(app)
@@ -34,7 +34,7 @@ except ImportError:
 CRLF = "\r\n"
 
 def translate_usage(usage):
-    """将 DeepSeek usage 格式转为 Responses API 格式。"""
+    """Translate DeepSeek usage format to Responses API format."""
     if not usage:
         return {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0}
     result = {
@@ -42,7 +42,7 @@ def translate_usage(usage):
         'output_tokens': usage.get('completion_tokens', 0),
         'total_tokens': usage.get('total_tokens', 0),
     }
-    # 保留 DeepSeek 独有的细节字段（可选）
+    # Preserve DeepSeek-specific detail fields (optional)
     prompt_details = usage.get('prompt_tokens_details')
     if prompt_details:
         result['input_tokens_details'] = {
@@ -57,7 +57,7 @@ def translate_usage(usage):
     return result
 
 def sse_event(event_type, data):
-    """生成 Responses API 标准 SSE 事件（含 event: 行，JSON 中使用 type 字段）。"""
+    """Generate a standard Responses API SSE event with type field in JSON."""
     data['type'] = event_type
     payload = json.dumps(data, ensure_ascii=False)
     logger.debug(f"SSE << {event_type}")
@@ -69,7 +69,7 @@ def generate_codex_stream(auth, messages):
     output_id = f"output_{uuid.uuid4()}"
     logger.info(f"开始生成响应，ID: {resp_id}")
 
-    # 当前时间戳
+    # Timestamp for response creation
     created_at = int(time.time())
 
     # 1. response.created
@@ -128,8 +128,8 @@ def generate_codex_stream(auth, messages):
         }
     })
 
-    full_text = ""          # 累积全部文本
-    usage_info = None       # 保存 DeepSeek 返回的 usage (原始格式)
+    full_text = ""          # Accumulate full text from chunks
+    usage_info = None       # DeepSeek's raw usage object from the final chunk
 
     try:
         payload = {
@@ -173,7 +173,7 @@ def generate_codex_stream(auth, messages):
 
                     try:
                         data = json.loads(data_str)
-                        # 捕获 usage（一般最后一条 chunk 会带）
+                        # Capture usage (usually in the last chunk before [DONE])
                         if 'usage' in data:
                             usage_info = data['usage']
                             logger.info(f"捕获 DeepSeek usage: {usage_info}")
@@ -183,7 +183,7 @@ def generate_codex_stream(auth, messages):
                             delta = choice.get('delta', {})
                             content = delta.get('content', '')
 
-                            # 记录 finish_reason
+                            # Log finish_reason when present
                             finish_reason = choice.get('finish_reason')
                             if finish_reason:
                                 logger.info(f"DeepSeek finish_reason={finish_reason}")
@@ -255,7 +255,7 @@ def generate_codex_stream(auth, messages):
             }
         })
 
-        # 注意：Responses API 流不需要 [DONE]
+        # Note: Responses API stream does not need a [DONE] sentinel
         logger.info(f"响应成功完成 (full_text_len={len(full_text)})")
 
     except Exception as e:
@@ -324,7 +324,7 @@ def responses():
         }
     )
 
-# 模型公共信息
+# Shared model metadata
 _MODEL_INFO = {
     "id": "deepseek-v4-flash",
     "object": "model",
