@@ -1,3 +1,7 @@
+# ── Detect Python interpreter (prefer .venv) ────────────────────
+
+PYTHON := $(shell [ -f .venv/bin/python ] && echo .venv/bin/python || echo python3)
+
 # ── PyPI build/publish ──────────────────────────────────────────
 
 PYPI_BUILD   = build-pypi
@@ -10,7 +14,7 @@ pypi-build: $(PYPI_BUILD)/dist
 
 $(PYPI_BUILD)/dist: $(PKG_DIR)/__init__.py $(PKG_DIR)/__main__.py
 	cp pyproject.toml README.md $(PYPI_BUILD)/
-	cd $(PYPI_BUILD) && python -m build --outdir dist
+	cd $(PYPI_BUILD) && $(PYTHON) -m build --outdir dist
 	@touch $@
 
 $(PKG_DIR):
@@ -33,10 +37,10 @@ pypi-clean:
 .PHONY: dev dev-install
 
 dev:
-	python ds_proxy.py
+	$(PYTHON) ds_proxy.py
 
 dev-install:
-	pip install -e .
+	$(PYTHON) -m pip install -e .
 
 # ── Clean ───────────────────────────────────────────────────────
 
