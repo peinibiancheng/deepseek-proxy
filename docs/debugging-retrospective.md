@@ -191,3 +191,195 @@ The string import (`"ds_proxy:asgi_app"`) is required for `reload=True` to work;
 5. **Debug with curl first** — strip away the client to isolate proxy issues. Only test with the actual client after the proxy passes curl tests.
 6. **When in doubt, log everything** — structured logging of each event (directional, with `<<` / `>>` markers) makes trace analysis trivial.
 7. **Flask needs ASGI wrapping for uvicorn** — `WsgiToAsgi` is the bridge, and string imports enable hot reload.
+
+---
+
+## Tool Call Support
+
+After the basic streaming text response was working, the next challenge was supporting tool/function calling — the feature that allows Codex to execute commands, create files, and interact with the environment through the proxy.
+
+### Issue 9: Tools/Tool Choice Dropped in Request
+
+**Symptom:** Codex sends tool definitions but DeepSeek never sees them — returns plain text like "I'll create the file" instead of generating `tool_calls`.
+
+**Root cause:** The proxy was not extracting `tools` and `tool_choice` from the request body, so they were never forwarded to DeepSeek's Chat Completions API.
+
+**Fix:** Extract and pass tools through the call chain:
+```python
+tools = data.get("tools")
+tool_choice = data.get("tool_choice")
+payload["tools"] = ds_tools
+if tool_choice:
+    payload["tool_choice"] = tool_choice
+```
+
+---
+
+### Issue 10: Tool Format Conversion (Flat vs Wrapped)
+
+**Symptom:** DeepSeek returns 400 error: "missing field `function`"
+
+**Root cause:** The Responses API sends tools in a flat format:
+```json
+{"type": "function", "name": "create_file", "parameters": {...}}
+```
+But the Chat Completions API expects a nested format:
+```json
+{"type": "function", "function": {"name": "create_file", "parameters": {...}}}
+```
+
+**Fix:** Added format detection and conversion:
+```python
+if "function" in t:
+    ds_tools.append(t)  # Already wrapped
+elif "name" in t:
+    ds_tools.append({   # Flat → wrap
+        "type": "function",
+        "function": {
+            "name": t["name"],
+            "description": t.get("description", ""),
+            "parameters": t.get("parameters", {})
+        }
+    })
+```
+
+---
+
+### Issue 11: Input Message Content Type Handling
+
+**Symptom:** Messages with `tool_call` and `tool_result` content parts are silently dropped — the conversation history loses tool context when Codex includes it.
+
+**Root cause:** The proxy only handled `input_text` content parts. The Responses API uses multiple content types:
+- `input_text` — regular text content
+- `tool_call` — an assistant message's tool invocation
+- `tool_result` — the result of executing a tool
+- `reasoning` — model reasoning (not part of Chat Completions format)
+
+**Fix:** Extended `content_parts` processing:
+```python
+for part in content_parts:
+    ptype = part.get("type")
+    if ptype == "input_text":
+        text_buf += part.get("text", "")
+    elif ptype == "tool_call":
+        tool_calls.append({
+            "id": part["id"],
+            "type": "function",
+            "function": {
+                "name": function["name"],
+                "arguments": function["arguments"]
+            }
+        })
+    elif ptype == "tool_result":
+        tool_call_id = part.get("tool_call_id", "")
+        text_buf += part.get("content", "")
+    elif ptype == "reasoning":
+        pass  # Not supported in Chat Completions
+```
+
+---
+
+### Issue 12: SSE Events for Tool Calls (Streaming)
+
+**Symptom:** Codex receives the SSE stream but doesn't execute the tool calls — files aren't created.
+
+**Root cause:** The proxy was only emitting `output_text.delta` events. Tool calls require a different set of SSE events in the Responses API format:
+1. `response.output_item.added` — with `type: "function_call"`, `call_id`, `name`
+2. `response.function_call_arguments.delta` — incremental argument tokens
+3. `response.function_call_arguments.done` — final accumulated arguments
+4. `response.output_item.done` — item completed
+
+Additionally, the `response.completed` event's `output` array must include function_call items, not text items.
+
+**Fix:** Added separate event emission paths for text vs tool calls, tracking per-index tool call state (`tool_call_items`, `tool_call_ids`).
+
+---
+
+### Issue 13: Empty-Role Messages Causing 400 Error
+
+**Symptom:** DeepSeek returns: "role: unknown variant ''"
+
+**Root cause:** Codex sends separator messages with empty role strings (`role: ""`) between conversation turns. These are not valid Chat Completions messages.
+
+**First attempt:** Convert empty role to `"user"` — caused DeepSeek to treat them as new user instructions, exacerbating the loop.
+
+**Final fix:** Infer role from content type when role is empty:
+```python
+if role not in ("system", "user", "assistant", "tool"):
+    if isinstance(content_parts, list):
+        types = [p.get("type") for p in content_parts]
+        if "tool_call" in types:
+            role = "assistant"
+        elif "tool_result" in types:
+            role = "tool"
+        else:
+            continue  # Skip true unknown messages
+    else:
+        continue
+```
+
+---
+
+### Issue 14: Infinite Tool Call Loop
+
+**Symptom:** DeepSeek keeps generating the same `tool_calls` (e.g., `exec_command`, `create_file`) in every request, causing Codex to create duplicate files indefinitely.
+
+**Root cause:** Codex executes tool calls locally but never sends the `tool` role messages (tool results) back in subsequent API requests. Each request to DeepSeek has identical conversation history (system + user messages), so the model repeatedly generates the same tool calls.
+
+**Failed approaches:**
+
+1. **System instruction injection** — Adding "[System Note: tools already executed, don't call them again]" — DeepSeek ignored it and kept calling tools.
+2. **Synthetic assistant + tool results without stripping tools** — DeepSeek called tools again for the same turn even after seeing tool results. The model wanted to execute the tool for the "current" request, treating the synthetic results as a previous attempt.
+
+**Additional constraint:** DeepSeek v4 Flash's thinking mode requires the `reasoning_content` field to be echoed back when reconstructing assistant messages. Adding `reasoning_content: ""` resolves this.
+
+**Final fix — multi-pronged approach:**
+
+1. **Tool call log cache** — keyed by message signature (first 4 messages, role + truncated content). Stores the tool calls returned for each unique request pattern.
+2. **Repeat request detection** — compares message signatures. If the same messages appear without tool results, it's a repeat.
+3. **Synthetic context injection + tool stripping:**
+
+```python
+# Inject assistant message with tool_calls
+messages.append({
+    "role": "assistant",
+    "content": None,
+    "reasoning_content": "",  # Required by DeepSeek thinking mode
+    "tool_calls": [...]
+})
+# Inject tool results
+for tc in cached_tc:
+    messages.append({
+        "role": "tool",
+        "tool_call_id": tc["id"],
+        "content": "Tool executed successfully."
+    })
+# CRITICAL: Remove tools so DeepSeek can only respond with text
+tools = None
+```
+
+4. **`ds_tools` initialization fix** — moved `ds_tools = []` outside the `if tools:` block to prevent `UnboundLocalError` when tools are stripped.
+
+**Key insight:** The only reliable way to stop DeepSeek from calling tools is to remove the tool definitions from the request entirely. System instructions and synthetic tool results alone were both ineffective.
+
+**Verification:**
+- First request: `tools: 10` → DeepSeek returns `finish_reason=tool_calls`
+- Repeat detected → inject assistant + tool messages, strip tools
+- Second request: `tools: 0` → DeepSeek returns `finish_reason=stop` (text response)
+
+### Debugging Techniques for Tool Calls
+
+| Technique | Purpose |
+|---|---|
+| `curl` repeat test | Verify repeat detection and injection flow by sending identical requests |
+| `grep "detect\|inject\|strip\|finish_reason"` | Quick trace of the tool call lifecycle |
+| `/proc/<pid>/fd/` inspection | Check if daemon log file descriptors are valid (found deleted log file) |
+| Clean restart (`kill; rm -rf logdir; restart`) | Fix log file issues in daemon mode |
+
+### Key Takeaways for Tool Calls
+
+1. **Codex doesn't send tool results back** — this is a fundamental behavioral difference from the OpenAI API. The proxy must compensate with synthetic context injection.
+2. **Tool definitions must be stripped on repeats** — telling DeepSeek not to call tools doesn't work; removing the tools entirely is the only reliable approach.
+3. **DeepSeek v4 thinking mode** — `reasoning_content` must be present (even if empty) in reconstructed assistant messages, or DeepSeek rejects the request with a 400 error.
+4. **Format conversion is multi-layered** — tools need format conversion (flat→wrapped), content parts need type mapping (tool_call→tool_calls, tool_result→tool), and SSE events need a completely different set for function calls vs text.
+5. **Daemon log management** — when using `start --daemon`, the log file can be deleted while the process is running. Use `nohup` or check `/proc/<pid>/fd/` to verify. Clean restart is the simplest fix.

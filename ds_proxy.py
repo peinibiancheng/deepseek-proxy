@@ -33,6 +33,36 @@ except ImportError:
 
 CRLF = "\r\n"
 
+# Conversation cache for previous_response_id support
+_prev_responses = {}
+_MAX_CACHED = 50
+
+# Cache: message_signature -> [tool_calls] for synthetic tool result injection
+_tool_call_log = {}
+_MAX_TOOL_LOG = 100
+
+def _messages_signature(messages):
+    """Create a stable signature from the first few non-empty messages."""
+    sig = []
+    for m in messages[:4]:
+        role = m.get("role", "")
+        content = str(m.get("content", ""))[:80]
+        sig.append(f"{role}:{content}")
+    return "|".join(sig)
+
+def _needs_tool_results(messages, log):
+    """Check if this request is a repeat (same messages, no tool results)."""
+    if not log:
+        return None
+    # Check if messages contain any tool role
+    has_tool_msgs = any(m.get("role") == "tool" for m in messages)
+    if has_tool_msgs:
+        return None  # Already has tool results
+    sig = _messages_signature(messages)
+    if sig in log:
+        return log[sig]
+    return None
+
 def translate_usage(usage):
     """Translate DeepSeek usage format to Responses API format."""
     if not usage:
@@ -64,12 +94,19 @@ def sse_event(event_type, data):
     return f"event: {event_type}{CRLF}data: {payload}{CRLF}{CRLF}"
 
 
-def generate_codex_stream(auth, messages):
-    resp_id = f"resp_{uuid.uuid4()}"
-    output_id = f"output_{uuid.uuid4()}"
+def generate_codex_stream(auth, messages, tools=None, tool_choice=None, resp_id=None, tool_cache_key=None):
+    if resp_id is None:
+        resp_id = f"resp_{uuid.uuid4()}"
     logger.info(f"开始生成响应，ID: {resp_id}")
 
-    # Timestamp for response creation
+    # Track if we've started an output item and what type
+    output_started = False
+    is_tool_call = False
+    tool_call_items = {}          # index -> {id, name, arguments}
+    tool_call_ids = []            # ordered indices
+    full_text = ""
+    usage_info = None
+
     created_at = int(time.time())
 
     # 1. response.created
@@ -100,47 +137,44 @@ def generate_codex_stream(auth, messages):
         }
     })
 
-    # 3. response.output_item.added
-    yield sse_event("response.output_item.added", {
-        'id': resp_id,
-        'object': 'response.output_item.added',
-        'item_id': output_id,
-        'output_index': 0,
-        'item': {
-            'id': output_id,
-            'object': 'response.output_item',
-            'type': 'message',
-            'role': 'assistant',
-            'status': 'in_progress',
-            'content': []
-        }
-    })
-
-    # 3. response.content_part.added
-    yield sse_event("response.content_part.added", {
-        'id': resp_id,
-        'object': 'response.content_part.added',
-        'output_index': 0,
-        'content_index': 0,
-        'part': {
-            'type': 'text',
-            'text': ''
-        }
-    })
-
-    full_text = ""          # Accumulate full text from chunks
-    usage_info = None       # DeepSeek's raw usage object from the final chunk
-
     try:
         payload = {
             "model": "deepseek-v4-flash",
             "messages": messages,
             "stream": True,
             "temperature": 0.7,
-            "max_tokens": 4096
+            "max_tokens": 4096,
         }
+        ds_tools = []
+        if tools:
+            # Convert Responses API tool format to Chat Completions format
+            for t in tools:
+                if "function" in t:
+                    # Already has function wrapper (Chat Completions format)
+                    ds_tools.append(t)
+                elif "name" in t:
+                    # Responses API flat format: wrap in function key
+                    ds_tools.append({
+                        "type": "function",
+                        "function": {
+                            "name": t.get("name", ""),
+                            "description": t.get("description", ""),
+                            "parameters": t.get("parameters", {"type": "object", "properties": {}})
+                        }
+                    })
+                else:
+                    logger.debug(f"跳过未知工具格式: {json.dumps(t)[:200]}")
+            if ds_tools:
+                payload["tools"] = ds_tools
+        if tool_choice:
+            payload["tool_choice"] = tool_choice
 
-        logger.debug(f"发送到 DeepSeek 的请求: {json.dumps(payload, indent=2)}")
+        if messages:
+            roles_str = ", ".join(f"{i}:{m.get('role','?')}" for i, m in enumerate(messages))
+            logger.debug(f"发送到 DeepSeek: {len(messages)} 条消息 [{roles_str}], tools: {len(ds_tools) if ds_tools else 0} 个")
+        else:
+            logger.warning("没有有效消息可发送到 DeepSeek")
+            raise Exception("没有有效消息")
 
         with requests.post(
             DEEPSEEK_CHAT_URL,
@@ -173,24 +207,47 @@ def generate_codex_stream(auth, messages):
 
                     try:
                         data = json.loads(data_str)
-                        # Capture usage (usually in the last chunk before [DONE])
                         if 'usage' in data:
                             usage_info = data['usage']
-                            logger.info(f"捕获 DeepSeek usage: {usage_info}")
 
                         if 'choices' in data and len(data['choices']) > 0:
                             choice = data['choices'][0]
                             delta = choice.get('delta', {})
-                            content = delta.get('content', '')
-
-                            # Log finish_reason when present
                             finish_reason = choice.get('finish_reason')
-                            if finish_reason:
-                                logger.info(f"DeepSeek finish_reason={finish_reason}")
 
+                            # --- Handle text content ---
+                            content = delta.get('content')
                             if content:
+                                if not output_started:
+                                    is_tool_call = False
+                                    output_started = True
+                                    text_output_id = f"output_{uuid.uuid4()}"
+                                    yield sse_event("response.output_item.added", {
+                                        'id': resp_id,
+                                        'object': 'response.output_item.added',
+                                        'item_id': text_output_id,
+                                        'output_index': 0,
+                                        'item': {
+                                            'id': text_output_id,
+                                            'object': 'response.output_item',
+                                            'type': 'message',
+                                            'role': 'assistant',
+                                            'status': 'in_progress',
+                                            'content': []
+                                        }
+                                    })
+                                    yield sse_event("response.content_part.added", {
+                                        'id': resp_id,
+                                        'object': 'response.content_part.added',
+                                        'output_index': 0,
+                                        'content_index': 0,
+                                        'part': {
+                                            'type': 'text',
+                                            'text': ''
+                                        }
+                                    })
+
                                 full_text += content
-                                logger.debug(f"  增量文本: {repr(content)}")
                                 yield sse_event("response.output_text.delta", {
                                     "id": resp_id,
                                     "object": "response.output_text.delta",
@@ -198,6 +255,65 @@ def generate_codex_stream(auth, messages):
                                     "content_index": 0,
                                     "delta": content
                                 })
+
+                            # --- Handle tool calls ---
+                            tool_calls = delta.get('tool_calls')
+                            if tool_calls:
+                                is_tool_call = True
+                                for tc in tool_calls:
+                                    idx = tc.get('index')
+                                    if idx not in tool_call_items:
+                                        # First chunk for this tool call
+                                        tc_id = tc.get('id', f"call_{uuid.uuid4().hex[:16]}")
+                                        tc_name = tc.get('function', {}).get('name', 'unknown_tool')
+                                        tc_args = tc.get('function', {}).get('arguments', '')
+                                        tool_call_items[idx] = {
+                                            'id': tc_id,
+                                            'name': tc_name,
+                                            'arguments': tc_args
+                                        }
+                                        tool_call_ids.append(idx)
+                                        # Emit output_item.added for this function call
+                                        yield sse_event("response.output_item.added", {
+                                            'id': resp_id,
+                                            'object': 'response.output_item.added',
+                                            'item_id': tc_id,
+                                            'output_index': idx,
+                                            'item': {
+                                                'id': tc_id,
+                                                'object': 'response.output_item',
+                                                'type': 'function_call',
+                                                'status': 'in_progress',
+                                                'call_id': tc_id,
+                                                'name': tc_name,
+                                                'arguments': ''
+                                            }
+                                        })
+                                        if tc_args:
+                                            yield sse_event("response.function_call_arguments.delta", {
+                                                "id": resp_id,
+                                                "object": "response.function_call_arguments.delta",
+                                                "output_index": idx,
+                                                "item_id": tc_id,
+                                                "delta": tc_args
+                                            })
+                                    else:
+                                        # Subsequent chunks — accumulate arguments
+                                        func = tc.get('function', {})
+                                        arg_delta = func.get('arguments', '')
+                                        if arg_delta:
+                                            tool_call_items[idx]['arguments'] += arg_delta
+                                            yield sse_event("response.function_call_arguments.delta", {
+                                                "id": resp_id,
+                                                "object": "response.function_call_arguments.delta",
+                                                "output_index": idx,
+                                                "item_id": tool_call_items[idx]['id'],
+                                                "delta": arg_delta
+                                            })
+
+                            if finish_reason:
+                                logger.info(f"DeepSeek finish_reason={finish_reason}")
+
                     except Exception as e:
                         logger.error(f"解析 DeepSeek 数据失败: {e}")
                         logger.error(f"原始数据: {data_str}")
@@ -205,58 +321,133 @@ def generate_codex_stream(auth, messages):
 
             logger.info(f"DeepSeek 流结束，共处理 {line_count} 行")
 
-        # 5. response.output_text.done
-        yield sse_event("response.output_text.done", {
-            'id': resp_id,
-            'object': 'response.output_text.done',
-            'output_index': 0,
-            'content_index': 0,
-            'text': full_text
-        })
-
-        # 6. response.output_item.done
-        yield sse_event("response.output_item.done", {
-            'id': resp_id,
-            'object': 'response.output_item.done',
-            'output_index': 0,
-            'item': {
-                'id': output_id,
-                'object': 'response.output_item',
-                'type': 'message',
-                'role': 'assistant',
-                'status': 'completed',
-                'content': [{'type': 'text', 'text': full_text}]
-            }
-        })
-
-        # 7. response.completed
-        translated_usage = translate_usage(usage_info)
-        logger.info(f"最终 usage: {translated_usage}")
-        yield sse_event("response.completed", {
-            'id': resp_id,
-            'object': 'response.completed',
-            'response': {
-                'id': resp_id,
-                'object': 'response',
-                'created_at': created_at,
-                'status': 'completed',
-                'model': 'deepseek-v4-flash',
-                'output': [
-                    {
-                        'id': output_id,
+        # --- Emit done events based on response type ---
+        if is_tool_call:
+            # Emit function_call_arguments.done + output_item.done for each tool call
+            output_items = []
+            for idx in sorted(tool_call_ids):
+                item = tool_call_items[idx]
+                yield sse_event("response.function_call_arguments.done", {
+                    'id': resp_id,
+                    'object': 'response.function_call_arguments.done',
+                    'output_index': idx,
+                    'item_id': item['id'],
+                    'name': item['name'],
+                    'arguments': item['arguments']
+                })
+                yield sse_event("response.output_item.done", {
+                    'id': resp_id,
+                    'object': 'response.output_item.done',
+                    'output_index': idx,
+                    'item': {
+                        'id': item['id'],
                         'object': 'response.output_item',
-                        'type': 'message',
-                        'role': 'assistant',
+                        'type': 'function_call',
                         'status': 'completed',
-                        'content': [{'type': 'text', 'text': full_text}]
+                        'call_id': item['id'],
+                        'name': item['name'],
+                        'arguments': item['arguments']
                     }
-                ],
-                'usage': translated_usage
-            }
-        })
+                })
+                output_items.append({
+                    'id': item['id'],
+                    'object': 'response.output_item',
+                    'type': 'function_call',
+                    'status': 'completed',
+                    'call_id': item['id'],
+                    'name': item['name'],
+                    'arguments': item['arguments']
+                })
 
-        # Note: Responses API stream does not need a [DONE] sentinel
-        logger.info(f"响应成功完成 (full_text_len={len(full_text)})")
+            # Log tool calls for repeat detection
+            if tool_cache_key and output_items:
+                _tool_call_log[tool_cache_key] = [{
+                    "id": item["id"],
+                    "name": item["name"],
+                    "arguments": item["arguments"]
+                } for item in output_items]
+                while len(_tool_call_log) > _MAX_TOOL_LOG:
+                    _tool_call_log.pop(next(iter(_tool_call_log)))
+                logger.info(f"缓存工具调用记录: key={tool_cache_key}, tools={len(output_items)}")
+
+            translated_usage = translate_usage(usage_info)
+            yield sse_event("response.completed", {
+                'id': resp_id,
+                'object': 'response.completed',
+                'response': {
+                    'id': resp_id,
+                    'object': 'response',
+                    'created_at': created_at,
+                    'status': 'completed',
+                    'model': 'deepseek-v4-flash',
+                    'output': output_items,
+                    'usage': translated_usage
+                }
+            })
+            logger.info(f"工具调用完成: {len(tool_call_items)} 个工具")
+        elif output_started:
+            # Text response
+            yield sse_event("response.output_text.done", {
+                'id': resp_id,
+                'object': 'response.output_text.done',
+                'output_index': 0,
+                'content_index': 0,
+                'text': full_text
+            })
+
+            yield sse_event("response.output_item.done", {
+                'id': resp_id,
+                'object': 'response.output_item.done',
+                'output_index': 0,
+                'item': {
+                    'id': text_output_id,
+                    'object': 'response.output_item',
+                    'type': 'message',
+                    'role': 'assistant',
+                    'status': 'completed',
+                    'content': [{'type': 'text', 'text': full_text}]
+                }
+            })
+
+            translated_usage = translate_usage(usage_info)
+            yield sse_event("response.completed", {
+                'id': resp_id,
+                'object': 'response.completed',
+                'response': {
+                    'id': resp_id,
+                    'object': 'response',
+                    'created_at': created_at,
+                    'status': 'completed',
+                    'model': 'deepseek-v4-flash',
+                    'output': [
+                        {
+                            'id': text_output_id,
+                            'object': 'response.output_item',
+                            'type': 'message',
+                            'role': 'assistant',
+                            'status': 'completed',
+                            'content': [{'type': 'text', 'text': full_text}]
+                        }
+                    ],
+                    'usage': translated_usage
+                }
+            })
+        else:
+            # Empty response (no content, no tool calls)
+            translated_usage = translate_usage(usage_info)
+            yield sse_event("response.completed", {
+                'id': resp_id,
+                'object': 'response.completed',
+                'response': {
+                    'id': resp_id,
+                    'object': 'response',
+                    'created_at': created_at,
+                    'status': 'completed',
+                    'model': 'deepseek-v4-flash',
+                    'output': [],
+                    'usage': translated_usage
+                }
+            })
 
     except Exception as e:
         logger.error(f"流生成失败: {str(e)}")
@@ -283,38 +474,156 @@ def responses():
         return jsonify({"error": "invalid request body"}), 400
 
     input_msgs = data.get("input", [])
-    logger.info(f"input 消息数量: {len(input_msgs)}")
-    logger.info(f"请求 model: {data.get('model', '(未指定)')}")
-    logger.info(f"请求 settings: {json.dumps(data.get('settings', {}))}")
+    tools = data.get("tools")
+    tool_choice = data.get("tool_choice")
+    previous_response_id = data.get("previous_response_id")
+    logger.info(f"input 消息数量: {len(input_msgs)}, tools: {'yes' if tools else 'no'}, tool_choice: {tool_choice}")
+    if previous_response_id:
+        logger.info(f"previous_response_id: {previous_response_id}, in_cache: {previous_response_id in _prev_responses}")
+
+    # Log full details of first 3 messages for debugging
+    for i in range(min(3, len(input_msgs))):
+        msg = input_msgs[i]
+        logger.debug(f"  消息[{i}] 完整 json: {json.dumps(msg, ensure_ascii=False)[:500]}")
 
     messages = []
+
     for i, msg in enumerate(input_msgs):
         role = msg.get("role", "")
         logger.debug(f"  消息[{i}]: role={role}, content_type={'list' if isinstance(msg.get('content'), list) else 'string'}")
 
+        content_parts = msg.get("content")
+
+        # Infer role from content type when role is empty/invalid
+        if role not in ("system", "user", "assistant", "tool"):
+            if isinstance(content_parts, list):
+                types_in_content = [p.get("type", "") for p in content_parts]
+                if "tool_call" in types_in_content:
+                    role = "assistant"
+                    logger.debug(f"  消息[{i}]: 推断 role='assistant' (包含 tool_call 内容)")
+                elif "tool_result" in types_in_content:
+                    role = "tool"
+                    logger.debug(f"  消息[{i}]: 推断 role='tool' (包含 tool_result 内容)")
+                else:
+                    logger.debug(f"  消息[{i}]: 跳过无效 role={role!r}, types={types_in_content}")
+                    continue
+            else:
+                logger.debug(f"  消息[{i}]: 跳过无效 role={role!r}")
+                continue
+
         if role == "developer":
-            logger.debug(f"  消息[{i}]: 将 role 'developer' → 'system'")
             role = "system"
 
-        content = ""
-        if isinstance(msg.get("content"), list):
-            for j, part in enumerate(msg["content"]):
-                if part.get("type") == "input_text":
-                    text = part.get("text", "")
-                    content += text
-                    logger.debug(f"    消息[{i}] part[{j}]: type=input_text, len={len(text)}")
+        logger.debug(f"  消息[{i}] 完整: role={role!r}, keys={list(msg.keys())}, content_preview={str(msg.get('content'))[:120]!r}")
+        if isinstance(content_parts, list):
+            text_buf = ""
+            tool_calls = None
+            tool_call_id = None
+            for part in content_parts:
+                ptype = part.get("type")
+                if ptype == "input_text":
+                    text_buf += part.get("text", "")
+                    logger.debug(f"    消息[{i}] part: type=input_text, len={len(part.get('text', ''))}")
+                elif ptype == "tool_call":
+                    # Convert tool_call part to Chat Completions tool_calls format
+                    function = part.get("function", {})
+                    tc = {
+                        "id": part.get("id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": function.get("name", ""),
+                            "arguments": function.get("arguments", "{}")
+                        }
+                    }
+                    if tool_calls is None:
+                        tool_calls = []
+                    tool_calls.append(tc)
+                    logger.debug(f"    消息[{i}] part: type=tool_call, id={part.get('id', '')}")
+                elif ptype == "tool_result":
+                    tool_call_id = part.get("tool_call_id", "")
+                    text_buf += part.get("content", "")
+                    logger.debug(f"    消息[{i}] part: type=tool_result, tool_call_id={tool_call_id}")
+                elif ptype == "reasoning":
+                    # reasoning is not part of Chat Completions format, skip it
+                    logger.debug(f"    消息[{i}] part: type=reasoning, 跳过")
                 else:
-                    logger.debug(f"    消息[{i}] part[{j}]: type={part.get('type')}, 跳过")
+                    logger.debug(f"    消息[{i}] part: type={ptype}, 跳过")
+
+            if tool_calls:
+                # Assistant message with tool_calls
+                messages.append({
+                    "role": role,
+                    "content": text_buf or None,
+                    "tool_calls": tool_calls
+                })
+            elif tool_call_id:
+                # Tool result message
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": text_buf
+                })
+            else:
+                # Normal text message
+                messages.append({"role": role, "content": text_buf})
         else:
             content = msg.get("content", "")
+            messages.append({"role": role, "content": content})
 
-        messages.append({"role": role, "content": content})
-        logger.info(f"  转换后 消息[{i}]: role={role}, content_len={len(content)}, content_preview={content[:80]!r}")
+        logger.info(f"  转换后 消息[{i}]: role={role}, content_preview={str(messages[-1].get('content', ''))[:80]!r}")
+
+    # Compute cache key for tool call repeat detection
+    tool_cache_key = _messages_signature(messages)
+    logger.debug(f"工具缓存 key: {tool_cache_key[:120]}")
+
+    # Check if this is a repeat request that needs synthetic tool results
+    # (Codex executes tool calls locally but doesn't send results back)
+    cached_tc = _needs_tool_results(messages, _tool_call_log)
+    if cached_tc:
+        logger.info(f"检测到重复请求，注入 {len(cached_tc)} 个合成工具结果以打破循环")
+        # Inject assistant message with tool_calls (required by DeepSeek before tool results)
+        assistant_tc = []
+        for tc in cached_tc:
+            assistant_tc.append({
+                "id": tc["id"],
+                "type": "function",
+                "function": {
+                    "name": tc.get("name", "unknown"),
+                    "arguments": tc.get("arguments", "{}")
+                }
+            })
+        assistant_msg = {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "",
+            "tool_calls": assistant_tc
+        }
+        messages.append(assistant_msg)
+        # Inject tool results
+        for tc in cached_tc:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": "Tool executed successfully."
+            })
+        logger.info(f"已注入助理消息 + {len(cached_tc)} 个工具结果")
+        # Strip tools so DeepSeek can't keep calling them
+        tools = None
+        logger.info("已移除工具定义，DeepSeek 将返回文字回复")
 
     logger.info("消息转换完成，开始流式请求 DeepSeek")
 
+    # Generate response ID and cache conversation
+    resp_id = f"resp_{uuid.uuid4()}"
+    _prev_responses[resp_id] = {"ds_messages": list(messages)}
+    while len(_prev_responses) > _MAX_CACHED:
+        _prev_responses.pop(next(iter(_prev_responses)))
+
+    def generate_with_cache():
+        yield from generate_codex_stream(auth_header, messages, tools, tool_choice, resp_id, tool_cache_key)
+
     return Response(
-        generate_codex_stream(auth_header, messages),
+        generate_with_cache(),
         content_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
