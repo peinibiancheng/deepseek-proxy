@@ -40,7 +40,8 @@ pypi-build: $(PYPI_BUILD)/dist
 	@echo "✓ PyPI package built at $(PYPI_BUILD)/dist/"
 
 $(PYPI_BUILD)/dist: $(PKG_DIR)/__init__.py $(PKG_DIR)/__main__.py
-	cp pyproject.toml README_PYPI.md $(PYPI_BUILD)/README.md
+	cp pyproject.toml $(PYPI_BUILD)/
+	cp README_PYPI.md $(PYPI_BUILD)/README.md
 	$(PYTHON) -m build $(PYPI_BUILD) --outdir $(PYPI_BUILD)/dist
 	@touch $@
 
