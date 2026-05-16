@@ -2,6 +2,30 @@
 
 PYTHON := $(if $(wildcard .venv/bin/python),$(CURDIR)/.venv/bin/python,python3)
 
+# ── Help ──────────────────────────────────────────────────────────
+
+.PHONY: help
+
+help:
+	@echo "DeepSeek Proxy — Makefile"
+	@echo ""
+	@echo "PyPI:"
+	@echo "  make pypi-setup      Install build & twine"
+	@echo "  make pypi-build      Build wheel + sdist"
+	@echo "  make pypi-publish    Build + upload to PyPI"
+	@echo "  make pypi-clean      Remove build-pypi/"
+	@echo ""
+	@echo "Version:"
+	@echo "  make bump-patch      0.1.0 → 0.1.1"
+	@echo "  make bump-minor      0.1.0 → 0.2.0"
+	@echo "  make bump-major      0.1.0 → 1.0.0"
+	@echo "  make pypi-release    bump-patch + publish"
+	@echo ""
+	@echo "Dev:"
+	@echo "  make dev             Run from source (python ds_proxy.py)"
+	@echo "  make dev-install     pip install -e ."
+	@echo "  make clean           Remove all build artifacts"
+
 # ── PyPI build/publish ──────────────────────────────────────────
 
 PYPI_BUILD   = build-pypi
