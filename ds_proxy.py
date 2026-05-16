@@ -354,7 +354,8 @@ def get_model(model_id):
     logger.info(f"=== GET /v1/models/{model_id} {dict(request.args)} ===")
     return jsonify({**_MODEL_INFO, "id": model_id})
 
-if __name__ == "__main__":
+def main():
+    """Entry point for CLI (`deepseek-proxy` command or `python -m deepseek_proxy`)."""
     logger.info("=" * 50)
     logger.info("DeepSeek Proxy 启动")
     logger.info(f"监听地址: http://127.0.0.1:8787")
@@ -367,12 +368,14 @@ if __name__ == "__main__":
         if asgi_app is None:
             raise ImportError("asgiref 未安装")
         uvicorn.run(
-            "ds_proxy:asgi_app",
+            asgi_app,
             host="127.0.0.1",
             port=8787,
             log_level="info",
-            reload=True
         )
     except ImportError as e:
         logger.warning(f"ASGI 依赖未安装 ({e})，回退到 Flask 开发服务器")
         app.run(host="127.0.0.1", port=8787, threaded=True)
+
+if __name__ == "__main__":
+    main()

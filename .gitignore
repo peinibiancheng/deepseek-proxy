@@ -32,3 +32,6 @@ Thumbs.db
 
 # Agent context files
 AGENTS.md
+
+# PyPI build directory
+build-pypi/

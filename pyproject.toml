@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepseek-proxy"
+version = "0.1.0"
+description = "Translate OpenAI Responses API ↔ DeepSeek Chat Completions API for codex"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.8"
+dependencies = [
+    "flask>=3.0",
+    "requests>=2.31",
+    "uvicorn>=0.27",
+    "asgiref>=3.7",
+]
+keywords = ["deepseek", "claude-code", "codex", "proxy", "responses-api"]
+authors = [
+    { name = "peinibiancheng" },
+]
+
+[project.urls]
+Homepage = "https://github.com/peinibiancheng/deepseek-proxy"
+Source = "https://github.com/peinibiancheng/deepseek-proxy"
+
+[project.scripts]
+deepseek-proxy = "deepseek_proxy:main"
+
+[tool.setuptools]
+packages = ["deepseek_proxy"]
