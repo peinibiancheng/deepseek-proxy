@@ -357,19 +357,19 @@ def get_model(model_id):
     logger.info(f"=== GET /v1/models/{model_id} {dict(request.args)} ===")
     return jsonify({**_MODEL_INFO, "id": model_id})
 
-def run_server(host="127.0.0.1", port=8787):
+def run_server(host="127.0.0.1", port=8787, log_dir=None):
     """Start the proxy server (blocking)."""
     logger.info("=" * 50)
-    logger.info("DeepSeek Proxy 启动")
-    logger.info(f"监听地址: http://{host}:{port}")
+    logger.info("DeepSeek Proxy starting")
+    logger.info(f"Listening on http://{host}:{port}")
     logger.info(f"DeepSeek API: {DEEPSEEK_CHAT_URL}")
-    logger.info(f"DEEPSEEK_API_KEY 已设置: {bool(os.environ.get('DEEPSEEK_API_KEY'))}")
+    logger.info(f"DEEPSEEK_API_KEY set: {bool(os.environ.get('DEEPSEEK_API_KEY'))}")
     logger.info("=" * 50)
 
     try:
         import uvicorn
         if asgi_app is None:
-            raise ImportError("asgiref 未安装")
+            raise ImportError("asgiref not installed")
         uvicorn.run(
             asgi_app,
             host=host,
@@ -377,34 +377,50 @@ def run_server(host="127.0.0.1", port=8787):
             log_level="info",
         )
     except ImportError as e:
-        logger.warning(f"ASGI 依赖未安装 ({e})，回退到 Flask 开发服务器")
+        logger.warning(f"ASGI dependency not available ({e}), falling back to Flask dev server")
         app.run(host=host, port=port, threaded=True)
 
 
 PID_FILE = "/tmp/deepseek-proxy.pid"
+DEFAULT_LOG_DIR = "/tmp/deepseek-proxy"
 
 
-def daemonize():
-    """Fork into background and write PID file."""
+def ensure_log_dir(log_dir):
+    """Create log directory if it doesn't exist."""
+    os.makedirs(log_dir, exist_ok=True)
+
+
+def daemonize(log_dir):
+    """Fork into background, redirect stdout/stderr to log file, and write PID file."""
     pid = os.fork()
     if pid > 0:
-        # Parent process exits
         sys.exit(0)
-    # Child continues
     os.setsid()
-    # Second fork to fully detach
     pid = os.fork()
     if pid > 0:
         sys.exit(0)
-    # Write PID file
+
+    # Redirect stdin→/dev/null, stdout/stderr→log file at OS level
+    # (os.dup2 keeps existing Python file objects working since the FD changes)
+    ensure_log_dir(log_dir)
+    log_path = os.path.join(log_dir, "deepseek-proxy.log")
+    devnull_fd = os.open(os.devnull, os.O_RDONLY)
+    log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    os.dup2(devnull_fd, 0)
+    os.dup2(log_fd, 1)
+    os.dup2(log_fd, 2)
+    os.close(devnull_fd)
+    os.close(log_fd)
+
     with open(PID_FILE, "w") as f:
         f.write(str(os.getpid()))
 
 
 def cmd_start(args):
+    log_dir = getattr(args, "log_dir", None) or DEFAULT_LOG_DIR
     if args.daemon:
-        daemonize()
-    run_server(host=args.host, port=args.port)
+        daemonize(log_dir)
+    run_server(host=args.host, port=args.port, log_dir=log_dir)
 
 
 def cmd_stop(args):
@@ -432,14 +448,194 @@ def cmd_restart(args):
     cmd_start(args)
 
 
+def cmd_info(args):
+    """Display deepseek-proxy installation and config information."""
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    version = "unknown"
+    try:
+        f = Path(__file__).resolve()
+        # Try package version first
+        try:
+            import importlib.metadata as im
+            version = im.version("deepseek-proxy")
+        except Exception:
+            # Read from pyproject.toml
+            for parent in [f.parent] + list(f.parent.parents):
+                p = parent / "pyproject.toml"
+                if p.exists():
+                    import re
+                    m = re.search(r'version = "(.+?)"', p.read_text())
+                    if m:
+                        version = m.group(1)
+                        break
+    except Exception:
+        pass
+
+    script_path = Path(__file__).resolve()
+    install_path = script_path.parent
+    is_editable = (install_path / "pyproject.toml").exists()
+
+    # ── proxy running status ──
+    running = False
+    pid = None
+    try:
+        with open(PID_FILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        running = True
+    except Exception:
+        pass
+
+    # Env vars for codex/Anthropic proxy routing
+    env_vars = {
+        "ANTHROPIC_BASE_URL": os.environ.get("ANTHROPIC_BASE_URL", ""),
+        "ANTHROPIC_MODEL": os.environ.get("ANTHROPIC_MODEL", ""),
+        "DEEPSEEK_API_KEY": "<set>" if os.environ.get("DEEPSEEK_API_KEY") else "<not set>",
+    }
+
+    # Dependencies status
+    deps = {
+        "flask": None,
+        "requests": None,
+        "uvicorn": None,
+        "asgiref": None,
+    }
+    for mod in deps:
+        try:
+            __import__(mod)
+            try:
+                import importlib.metadata as im
+                deps[mod] = im.version(mod)
+            except Exception:
+                deps[mod] = "installed"
+        except ImportError:
+            deps[mod] = "MISSING"
+
+    print("=" * 54)
+    print(f"  DeepSeek Proxy  v{version}")
+    print("=" * 54)
+    print()
+    print("📦 Installation")
+    print(f"  Script:   {script_path}")
+    print(f"  Location: {install_path}")
+    print(f"  Type:     {'editable install (pip install -e .)' if is_editable else 'system install or running from source'}")
+    print()
+    print("🔌 Dependencies")
+    for mod, ver in deps.items():
+        status = "✓" if ver != "MISSING" else "✗"
+        print(f"  {status} {mod} ({ver})")
+    print()
+    print("⚙️  Runtime Status")
+    log_dir_val = getattr(args, "log_dir", None) or DEFAULT_LOG_DIR
+    log_file = os.path.join(log_dir_val, "deepseek-proxy.log")
+    print(f"  Proxy:     {'running (PID ' + str(pid) + ')' if running else 'stopped'}")
+    print(f"  Endpoint:  http://{args.host if args.command == 'start' else '127.0.0.1'}:{args.port if args.command == 'start' else '8787'}")
+    print(f"  API Key:   {'✓ set' if os.environ.get('DEEPSEEK_API_KEY') else '✗ not set'}")
+    print(f"  Log dir:   {log_dir_val}")
+    print(f"  Log file:  {log_file} {'(exists)' if os.path.exists(log_file) else '(no log yet)'}")
+    print()
+    # ── Codex config ──
+    codex_dir = Path.home() / ".codex"
+    codex_config = codex_dir / "config.toml"
+    codex_auth = codex_dir / "auth.json"
+    codex_version = codex_dir / "version.json"
+
+    wire_api = "N/A"
+    codex_base_url = "N/A"
+    codex_model = "N/A"
+    cfg = {}
+    if codex_config.exists():
+        try:
+            import tomllib
+            cfg = tomllib.loads(codex_config.read_text())
+        except Exception:
+            try:
+                import tomli as tomllib
+                cfg = tomllib.loads(codex_config.read_text())
+            except Exception:
+                cfg = {}
+        codex_model = cfg.get("model", "N/A")
+        provider = cfg.get("model_providers", {}).get(cfg.get("model_provider", ""), {})
+        codex_base_url = provider.get("base_url", "N/A")
+        wire_api = provider.get("wire_api", "N/A")
+
+    # ── Claude Code proxy config ──
+    claude_dir = Path.home() / ".claude"
+    settings_file = claude_dir / "settings.json"
+    settings_local = claude_dir / "settings.local.json"
+    proxy_url = "N/A"
+    proxy_model = "N/A"
+    for f in [settings_file, settings_local]:
+        if f.exists():
+            try:
+                sc = json.loads(f.read_text())
+                proxy = sc.get("proxy", {})
+                if proxy:
+                    proxy_url = proxy.get("url", proxy_url)
+                    proxy_model = proxy.get("model", proxy_model)
+            except Exception:
+                pass
+
+    print("🔧 Codex Config")
+    print(f"  Directory: {codex_dir}")
+    print(f"  Version:   {json.loads(codex_version.read_text()).get('latest_version', 'N/A') if codex_version.exists() else 'N/A'}")
+    print()
+    print(f"  Config file: {'✓ ' + str(codex_config) if codex_config.exists() else '✗ not found'}")
+    print(f"    Model:       {codex_model}")
+    print(f"    Provider:    {cfg.get('model_provider', 'N/A')}")
+    print(f"    Base URL:    {codex_base_url}")
+    print(f"    Wire API:    {wire_api}")
+    print(f"    Proxy link:  {'✓ points to this proxy' if '127.0.0.1:8787' in codex_base_url or 'localhost:8787' in codex_base_url else '✗ not pointing to this proxy'}")
+    print()
+    print(f"  Auth:    {'✓ ' + str(codex_auth) if codex_auth.exists() else '✗ not found'}")
+    print(f"  History: {'✓ ' + str(codex_dir / 'history.jsonl') if (codex_dir / 'history.jsonl').exists() else '✗ not found'}")
+    print(f"  Log:     {codex_dir / 'log/'}")
+    print()
+    print("🔧 Claude Code Config")
+    print(f"  ~/.claude/settings.json          {'✓ found' if settings_file.exists() else '✗ not found'}")
+    print(f"  ~/.claude/settings.local.json    {'✓ found' if settings_local.exists() else '✗ not found'}")
+    print()
+    print("🔀 Two Ways to Route Through DeepSeek")
+    print()
+    anthropic_base = os.environ.get("ANTHROPIC_BASE_URL", "")
+    print("  ① Direct DeepSeek Anthropic-compatible endpoint")
+    print(f"     Endpoint: {anthropic_base or 'https://api.deepseek.com/anthropic'}")
+    print(f"     Status:   {'✓ configured' if anthropic_base else '✗ not configured'}")
+    print("     Use case: Native Claude API mode (recommended, no proxy needed)")
+    print()
+    print("  ② Via deepseek-proxy (Responses API ↔ Chat Completions)")
+    print(f"     Status: {'✓ configured' if proxy_url != 'N/A' else '✗ not configured'}")
+    if proxy_url != "N/A":
+        print(f"     Proxy URL:   {proxy_url}")
+        print(f"     Proxy model: {proxy_model}")
+    print("     Use case: codex using OpenAI Responses API protocol")
+    print()
+    print("🌐 Environment Variables")
+    for k, v in env_vars.items():
+        if k == "DEEPSEEK_API_KEY":
+            print(f"  {k}={v}")
+        elif v:
+            print(f"  {k}={v}")
+        else:
+            print(f"  {k}=<not set>")
+    print()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="DeepSeek Proxy — translate Responses API ↔ Chat Completions API",
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8787, help="Bind port (default: 8787)")
+    parser.add_argument("--log-dir", default=DEFAULT_LOG_DIR, help=f"Log directory (default: {DEFAULT_LOG_DIR})")
 
     sub = parser.add_subparsers(dest="command")
+
+    info_parser = sub.add_parser("info", help="Show installation and configuration information")
+    info_parser.set_defaults(func=cmd_info)
 
     start_parser = sub.add_parser("start", help="Start the proxy (default)")
     start_parser.add_argument("--daemon", "-d", action="store_true", help="Run in background")
