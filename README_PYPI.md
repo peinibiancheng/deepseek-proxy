@@ -36,20 +36,7 @@ The proxy listens on `http://127.0.0.1:8787` by default.
 
 ## Configure codex
 
-### Option A: Proxy config (simpler)
-
-Add to `~/.claude/settings.local.json`:
-
-```json
-{
-  "proxy": {
-    "url": "http://127.0.0.1:8787/v1/responses",
-    "model": "deepseek-v4-flash"
-  }
-}
-```
-
-### Option B: Model provider config
+Point codex to the proxy via `~/.codex/config.toml`:
 
 Add to `~/.codex/config.toml`:
 
@@ -63,6 +50,16 @@ base_url = "http://127.0.0.1:8787/v1"
 env_key = "DEEPSEEK_API_KEY"
 wire_api = "responses"
 ```
+
+**Field reference:**
+
+| Field | Value | Description |
+|---|---|---|
+| `model` | `"deepseek-v4-flash"` | Default model for codex |
+| `model_provider` | `"deepseek"` | Matches the provider section name |
+| `base_url` | `"http://127.0.0.1:8787/v1"` | Proxy endpoint (no `/responses` suffix) |
+| `env_key` | `"DEEPSEEK_API_KEY"` | Env var for the API key |
+| `wire_api` | `"responses"` | Required value for this proxy |
 
 ## Verify
 

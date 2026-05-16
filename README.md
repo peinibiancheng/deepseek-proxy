@@ -160,26 +160,9 @@ curl -X POST http://127.0.0.1:8787/v1/responses \
   -d '{"input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}],"model":"deepseek-v4-flash"}'
 ```
 
-## Configure codex (Claude Code CLI)
+## Configure codex
 
-codex can be configured to use the proxy in two ways.
-
-### Option A: Proxy config (simpler)
-
-Add to `~/.claude/settings.local.json`:
-
-```json
-{
-  "proxy": {
-    "url": "http://127.0.0.1:8787/v1/responses",
-    "model": "deepseek-v4-flash"
-  }
-}
-```
-
-This tells Claude Code to route all requests through the proxy URL and use the specified model.
-
-### Option B: Model provider config
+codex uses OpenAI Responses API natively. Point it to the proxy by adding the following to `~/.codex/config.toml`:
 
 Add to `~/.codex/config.toml`:
 
@@ -194,7 +177,20 @@ env_key = "DEEPSEEK_API_KEY"
 wire_api = "responses"
 ```
 
-This registers DeepSeek as a custom model provider, making it selectable alongside other providers.
+This registers DeepSeek as a custom model provider.
+
+**Field reference:**
+
+| Field | Value | Description |
+|---|---|---|
+| `model` | `"deepseek-v4-flash"` | Default model for codex to use |
+| `model_provider` | `"deepseek"` | Matches the `[model_providers.deepseek]` section name |
+| `[model_providers.deepseek].name` | `"DeepSeek"` | Display name shown in codex UI |
+| `base_url` | `"http://127.0.0.1:8787/v1"` | Proxy endpoint (without `/responses` suffix) |
+| `env_key` | `"DEEPSEEK_API_KEY"` | Environment variable holding the DeepSeek API key |
+| `wire_api` | `"responses"` | API protocol — must be `"responses"` for this proxy |
+
+> **Note for source code users:** If running from source instead of PyPI, replace `deepseek-proxy` with `python ds_proxy.py` in all commands below.
 
 ### Environment Variable
 
@@ -368,26 +364,9 @@ curl -X POST http://127.0.0.1:8787/v1/responses \
   -d '{"input":[{"role":"user","content":[{"type":"input_text","text":"你好"}]}],"model":"deepseek-v4-flash"}'
 ```
 
-## 配置 codex (Claude Code CLI)
+## 配置 codex
 
-有两种方式让 codex 使用代理。
-
-### 方式 A：代理配置（更简单）
-
-添加到 `~/.claude/settings.local.json`：
-
-```json
-{
-  "proxy": {
-    "url": "http://127.0.0.1:8787/v1/responses",
-    "model": "deepseek-v4-flash"
-  }
-}
-```
-
-这告诉 Claude Code 将所有请求通过代理 URL 路由，并使用指定模型。
-
-### 方式 B：模型提供商配置
+codex 原生使用 OpenAI Responses API，将其指向代理即可。编辑 `~/.codex/config.toml`，添加以下内容：
 
 添加到 `~/.codex/config.toml`：
 
@@ -402,7 +381,20 @@ env_key = "DEEPSEEK_API_KEY"
 wire_api = "responses"
 ```
 
-这将 DeepSeek 注册为自定义模型提供商，可以在多个提供商之间切换选择。
+这将 DeepSeek 注册为自定义模型提供商。
+
+**字段说明：**
+
+| 字段 | 值 | 说明 |
+|---|---|---|
+| `model` | `"deepseek-v4-flash"` | codex 默认使用的模型 |
+| `model_provider` | `"deepseek"` | 对应 `[model_providers.deepseek]` 的节名 |
+| `[model_providers.deepseek].name` | `"DeepSeek"` | 在 codex UI 中显示的名称 |
+| `base_url` | `"http://127.0.0.1:8787/v1"` | 代理地址（不含 `/responses` 后缀）|
+| `env_key` | `"DEEPSEEK_API_KEY"` | 存放 DeepSeek API 密钥的环境变量名 |
+| `wire_api` | `"responses"` | API 协议 — 此代理必须设为 `"responses"` |
+
+> **从源码运行？** 将下面所有命令中的 `deepseek-proxy` 替换为 `python ds_proxy.py`。
 
 ### 环境变量
 

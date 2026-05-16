@@ -522,8 +522,6 @@ def cmd_info(args):
 
     # Env vars for codex/Anthropic proxy routing
     env_vars = {
-        "ANTHROPIC_BASE_URL": os.environ.get("ANTHROPIC_BASE_URL", ""),
-        "ANTHROPIC_MODEL": os.environ.get("ANTHROPIC_MODEL", ""),
         "DEEPSEEK_API_KEY": "<set>" if os.environ.get("DEEPSEEK_API_KEY") else "<not set>",
     }
 
@@ -596,23 +594,6 @@ def cmd_info(args):
         codex_base_url = provider.get("base_url", "N/A")
         wire_api = provider.get("wire_api", "N/A")
 
-    # ── Claude Code proxy config ──
-    claude_dir = Path.home() / ".claude"
-    settings_file = claude_dir / "settings.json"
-    settings_local = claude_dir / "settings.local.json"
-    proxy_url = "N/A"
-    proxy_model = "N/A"
-    for f in [settings_file, settings_local]:
-        if f.exists():
-            try:
-                sc = json.loads(f.read_text())
-                proxy = sc.get("proxy", {})
-                if proxy:
-                    proxy_url = proxy.get("url", proxy_url)
-                    proxy_model = proxy.get("model", proxy_model)
-            except Exception:
-                pass
-
     print("🔧 Codex Config")
     print(f"  Directory: {codex_dir}")
     print(f"  Version:   {json.loads(codex_version.read_text()).get('latest_version', 'N/A') if codex_version.exists() else 'N/A'}")
@@ -628,33 +609,13 @@ def cmd_info(args):
     print(f"  History: {'✓ ' + str(codex_dir / 'history.jsonl') if (codex_dir / 'history.jsonl').exists() else '✗ not found'}")
     print(f"  Log:     {codex_dir / 'log/'}")
     print()
-    print("🔧 Claude Code Config")
-    print(f"  ~/.claude/settings.json          {'✓ found' if settings_file.exists() else '✗ not found'}")
-    print(f"  ~/.claude/settings.local.json    {'✓ found' if settings_local.exists() else '✗ not found'}")
-    print()
-    print("🔀 Two Ways to Route Through DeepSeek")
-    print()
-    anthropic_base = os.environ.get("ANTHROPIC_BASE_URL", "")
-    print("  ① Direct DeepSeek Anthropic-compatible endpoint")
-    print(f"     Endpoint: {anthropic_base or 'https://api.deepseek.com/anthropic'}")
-    print(f"     Status:   {'✓ configured' if anthropic_base else '✗ not configured'}")
-    print("     Use case: Native Claude API mode (recommended, no proxy needed)")
-    print()
-    print("  ② Via deepseek-proxy (Responses API ↔ Chat Completions)")
-    print(f"     Status: {'✓ configured' if proxy_url != 'N/A' else '✗ not configured'}")
-    if proxy_url != "N/A":
-        print(f"     Proxy URL:   {proxy_url}")
-        print(f"     Proxy model: {proxy_model}")
-    print("     Use case: codex using OpenAI Responses API protocol")
+    print("🔀 Proxy Usage")
+    print("  Target: codex (OpenAI Responses API → DeepSeek Chat Completions)")
+    print("  Status: see Codex Config → Proxy link above")
     print()
     print("🌐 Environment Variables")
     for k, v in env_vars.items():
-        if k == "DEEPSEEK_API_KEY":
-            print(f"  {k}={v}")
-        elif v:
-            print(f"  {k}={v}")
-        else:
-            print(f"  {k}=<not set>")
+        print(f"  {k}={v}")
     print()
 
 
