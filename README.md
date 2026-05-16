@@ -18,18 +18,22 @@
 
 # English
 
+## Motivation
+
+**codex** (Claude Code CLI) uses the OpenAI **Responses API** (`/v1/responses`) natively, with SSE streaming and a specific event lifecycle. DeepSeek only provides a standard **Chat Completions API** (`/v1/chat/completions`). These two protocols are incompatible — you cannot simply point codex at a DeepSeek endpoint and expect it to work.
+
+This proxy solves that problem by translating between the two protocols in real time, allowing codex to use DeepSeek as its backend model.
+
 ## Overview
 
-DeepSeek Proxy is a single-file Flask application that sits between a Responses API client (e.g., Claude Code) and the DeepSeek API. It accepts requests in the OpenAI Responses API streaming format, translates them into DeepSeek's chat completions format, and converts the streaming SSE output back into the Responses API event protocol.
-
-**Why?** Claude Code uses the Responses API (`/v1/responses`) natively. DeepSeek provides a Chat Completions API (`/v1/chat/completions`). This proxy bridges the gap so you can use DeepSeek as the model provider for Claude Code.
+DeepSeek Proxy is a single-file Flask application that sits between codex and the DeepSeek API. It accepts requests in the Responses API streaming format, translates them into DeepSeek's chat completions format, and converts the streaming SSE output back into the Responses API event protocol.
 
 ## Architecture
 
 ```
 ┌─────────────┐     Responses API SSE      ┌────────────────┐     DeepSeek Chat API      ┌────────────┐
-│  Claude Code │  ───────────────────────→  │  ds_proxy.py   │  ──────────────────────→  │  DeepSeek  │
-│  (Client)    │  ←───────────────────────  │  (Flask Proxy) │  ←──────────────────────  │   API      │
+│    codex    │  ───────────────────────→  │  ds_proxy.py   │  ──────────────────────→  │  DeepSeek  │
+│ (CLI Client)│  ←───────────────────────  │  (Flask Proxy) │  ←──────────────────────  │   API      │
 └─────────────┘     SSE Events (7 types)    └────────────────┘     SSE stream chunks      └────────────┘
 ```
 
@@ -39,7 +43,7 @@ DeepSeek Proxy is a single-file Flask application that sits between a Responses 
 |---|---|---|
 | **Server** | Flask + uvicorn (ASGI) | HTTP server, SSE streaming |
 | **Adapter** | `asgiref.wsgi.WsgiToAsgi` | WSGI → ASGI wrapper for uvicorn |
-| **Translator** | Custom logic in `ds_proxy.py` | Request/response format conversion |
+| **Translator** | Custom logic in `ds_proxy.py` | Responses API ↔ Chat API conversion |
 | **Client** | `requests` (streaming) | HTTP client to DeepSeek API |
 
 ### Endpoints
@@ -135,9 +139,9 @@ curl -X POST http://127.0.0.1:8787/v1/responses \
   -d '{"input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}],"model":"deepseek-v4-flash"}'
 ```
 
-## Configure Claude Code
+## Configure codex (Claude Code CLI)
 
-Claude Code can be configured to use the proxy in two ways.
+codex can be configured to use the proxy in two ways.
 
 ### Option A: Proxy config (simpler)
 
@@ -201,18 +205,22 @@ tail -f /tmp/ds_proxy.log
 
 # 中文
 
+## 初衷
+
+**codex**（Claude Code CLI）原生使用 OpenAI **Responses API**（`/v1/responses`），采用 SSE 流式传输和特定的事件生命周期。而 DeepSeek 只提供标准的 **Chat Completions API**（`/v1/chat/completions`）。这两种协议互不兼容——不能简单地把 codex 指向 DeepSeek 端点就指望它能工作。
+
+这个代理通过实时转换两种协议解决了这个问题，让 codex 可以使用 DeepSeek 作为后端模型。
+
 ## 概述
 
-DeepSeek Proxy 是一个单文件 Flask 应用，充当 Responses API 客户端（如 Claude Code）和 DeepSeek API 之间的桥梁。它将 OpenAI Responses API 流式格式的请求转换为 DeepSeek 的对话补全格式，再将 DeepSeek 的流式输出转换回 Responses API 事件协议。
-
-**为什么需要它？** Claude Code 原生使用 Responses API（`/v1/responses`），而 DeepSeek 提供的是 Chat Completions API（`/v1/chat/completions`）。这个代理填补了协议差异，让你可以在 Claude Code 中使用 DeepSeek 作为模型提供商。
+DeepSeek Proxy 是一个单文件 Flask 应用，充当 codex 和 DeepSeek API 之间的桥梁。它将 Responses API 流式格式的请求转换为 DeepSeek 的对话补全格式，再将 DeepSeek 的流式输出转换回 Responses API 事件协议。
 
 ## 架构
 
 ```
 ┌─────────────┐     Responses API SSE      ┌────────────────┐     DeepSeek Chat API      ┌────────────┐
-│  Claude Code │  ───────────────────────→  │  ds_proxy.py   │  ──────────────────────→  │  DeepSeek  │
-│  (客户端)    │  ←───────────────────────  │  (Flask 代理)  │  ←──────────────────────  │   API      │
+│    codex    │  ───────────────────────→  │  ds_proxy.py   │  ──────────────────────→  │  DeepSeek  │
+│  (CLI 客户端) │  ←───────────────────────  │  (Flask 代理)  │  ←──────────────────────  │   API      │
 └─────────────┘     SSE 事件 (7 种类型)     └────────────────┘     SSE 流式数据块         └────────────┘
 ```
 
@@ -318,9 +326,9 @@ curl -X POST http://127.0.0.1:8787/v1/responses \
   -d '{"input":[{"role":"user","content":[{"type":"input_text","text":"你好"}]}],"model":"deepseek-v4-flash"}'
 ```
 
-## 配置 Claude Code
+## 配置 codex (Claude Code CLI)
 
-有两种方式让 Claude Code 使用代理。
+有两种方式让 codex 使用代理。
 
 ### 方式 A：代理配置（更简单）
 
