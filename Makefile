@@ -35,6 +35,21 @@ pypi-publish: pypi-build
 pypi-clean:
 	rm -rf $(PYPI_BUILD)
 
+# ── Version bump ──────────────────────────────────────────────────
+
+.PHONY: bump-patch bump-minor bump-major
+
+bump-patch:
+	@$(PYTHON) -c "import re; f='pyproject.toml'; c=open(f).read(); c=re.sub(r'version = \"(\d+)\.(\d+)\.(\d+)\"', lambda m: f'version = \"{m.group(1)}.{m.group(2)}.{int(m.group(3))+1}\"', c); open(f,'w').write(c); v=re.search(r'version = \"(.+?)\"',c).group(1); print(f'✓ bumped to {v}')"
+
+bump-minor:
+	@$(PYTHON) -c "import re; f='pyproject.toml'; c=open(f).read(); c=re.sub(r'version = \"(\d+)\.(\d+)\.(\d+)\"', lambda m: f'version = \"{m.group(1)}.{int(m.group(2))+1}.0\"', c); open(f,'w').write(c); v=re.search(r'version = \"(.+?)\"',c).group(1); print(f'✓ bumped to {v}')"
+
+bump-major:
+	@$(PYTHON) -c "import re; f='pyproject.toml'; c=open(f).read(); c=re.sub(r'version = \"(\d+)\.(\d+)\.(\d+)\"', lambda m: f'version = \"{int(m.group(1))+1}.0.0\"', c); open(f,'w').write(c); v=re.search(r'version = \"(.+?)\"',c).group(1); print(f'✓ bumped to {v}')"
+
+pypi-release: bump-patch pypi-publish
+
 # ── Development ─────────────────────────────────────────────────
 
 .PHONY: dev dev-install
