@@ -392,19 +392,29 @@ def ensure_log_dir(log_dir):
     os.makedirs(log_dir, exist_ok=True)
 
 
+def _cmd_name():
+    """Return the command name users should see in help text."""
+    arg0 = sys.argv[0] if sys.argv else "deepseek-proxy"
+    base = os.path.basename(arg0)
+    # Running as `python ds_proxy.py` or `python -m deepseek_proxy`
+    if base in ("ds_proxy.py", "__main__.py") or "python" in base:
+        return "python ds_proxy.py"
+    return "deepseek-proxy"
+
+
 def daemonize(log_dir):
     """Fork into background, redirect stdout/stderr to log file, and write PID file.
 
-    Note: Windows does not support fork(). On Windows, use foreground mode
-    with a terminal multiplexer or run via `start /B python ds_proxy.py` (cmd)
-    or `Start-Process -NoNewWindow python ds_proxy.py` (PowerShell).
+    Windows: fork() is unavailable; --daemon prints an error with
+    platform-appropriate alternatives (start /B, Start-Process).
     """
     if IS_WINDOWS:
+        cmd = _cmd_name()
         print("Error: --daemon is not supported on Windows.", file=sys.stderr)
         print("  Suggestions:", file=sys.stderr)
-        print("    Run in foreground:  python ds_proxy.py", file=sys.stderr)
-        print("    Background in cmd:  start /B python ds_proxy.py", file=sys.stderr)
-        print("    Background in pwsh: Start-Process -NoNewWindow python ds_proxy.py", file=sys.stderr)
+        print(f"    Run in foreground:  {cmd}", file=sys.stderr)
+        print(f"    Background in cmd:  start /B {cmd}", file=sys.stderr)
+        print(f"    Background in pwsh: Start-Process -NoNewWindow {cmd}", file=sys.stderr)
         sys.exit(1)
 
     pid = os.fork()
@@ -559,7 +569,7 @@ def cmd_info(args):
     print(f"  Log dir:   {log_dir_val}")
     print(f"  Log file:  {log_file} {'(exists)' if os.path.exists(log_file) else '(no log yet)'}")
     if IS_WINDOWS:
-        print("  Daemon:    not supported on Windows — use foreground or start /B")
+        print(f"  Daemon:    not supported on Windows — use foreground or `start /B {_cmd_name()}`")
     print()
     # ── Codex config ──
     codex_dir = Path.home() / ".codex"
