@@ -1,6 +1,7 @@
 import os
 import sys
 import signal
+import tempfile
 import argparse
 from flask import Flask, request, Response, jsonify
 import requests
@@ -381,8 +382,9 @@ def run_server(host="127.0.0.1", port=8787, log_dir=None):
         app.run(host=host, port=port, threaded=True)
 
 
-PID_FILE = "/tmp/deepseek-proxy.pid"
-DEFAULT_LOG_DIR = "/tmp/deepseek-proxy"
+PID_FILE = os.path.join(tempfile.gettempdir(), "deepseek-proxy.pid")
+DEFAULT_LOG_DIR = os.path.join(tempfile.gettempdir(), "deepseek-proxy")
+IS_WINDOWS = sys.platform == "win32"
 
 
 def ensure_log_dir(log_dir):
@@ -391,7 +393,20 @@ def ensure_log_dir(log_dir):
 
 
 def daemonize(log_dir):
-    """Fork into background, redirect stdout/stderr to log file, and write PID file."""
+    """Fork into background, redirect stdout/stderr to log file, and write PID file.
+
+    Note: Windows does not support fork(). On Windows, use foreground mode
+    with a terminal multiplexer or run via `start /B python ds_proxy.py` (cmd)
+    or `Start-Process -NoNewWindow python ds_proxy.py` (PowerShell).
+    """
+    if IS_WINDOWS:
+        print("Error: --daemon is not supported on Windows.", file=sys.stderr)
+        print("  Suggestions:", file=sys.stderr)
+        print("    Run in foreground:  python ds_proxy.py", file=sys.stderr)
+        print("    Background in cmd:  start /B python ds_proxy.py", file=sys.stderr)
+        print("    Background in pwsh: Start-Process -NoNewWindow python ds_proxy.py", file=sys.stderr)
+        sys.exit(1)
+
     pid = os.fork()
     if pid > 0:
         sys.exit(0)
@@ -433,9 +448,15 @@ def cmd_stop(args):
     except FileNotFoundError:
         print("DeepSeek Proxy is not running (no PID file found)")
         sys.exit(1)
-    except ProcessLookupError:
-        os.remove(PID_FILE)
-        print("DeepSeek Proxy was not running (stale PID file removed)")
+    except (ProcessLookupError, OSError):
+        # Windows os.kill may raise OSError (EINVAL) instead of
+        # ProcessLookupError (ESRCH) for non-existent processes
+        stale = os.path.exists(PID_FILE)
+        if stale:
+            os.remove(PID_FILE)
+            print("DeepSeek Proxy was not running (stale PID file removed)")
+        else:
+            print("DeepSeek Proxy was not running")
         sys.exit(1)
 
 
@@ -531,11 +552,14 @@ def cmd_info(args):
     print("⚙️  Runtime Status")
     log_dir_val = getattr(args, "log_dir", None) or DEFAULT_LOG_DIR
     log_file = os.path.join(log_dir_val, "deepseek-proxy.log")
+    print(f"  Platform:  {'Windows' if IS_WINDOWS else sys.platform}")
     print(f"  Proxy:     {'running (PID ' + str(pid) + ')' if running else 'stopped'}")
     print(f"  Endpoint:  http://{args.host if args.command == 'start' else '127.0.0.1'}:{args.port if args.command == 'start' else '8787'}")
     print(f"  API Key:   {'✓ set' if os.environ.get('DEEPSEEK_API_KEY') else '✗ not set'}")
     print(f"  Log dir:   {log_dir_val}")
     print(f"  Log file:  {log_file} {'(exists)' if os.path.exists(log_file) else '(no log yet)'}")
+    if IS_WINDOWS:
+        print("  Daemon:    not supported on Windows — use foreground or start /B")
     print()
     # ── Codex config ──
     codex_dir = Path.home() / ".codex"
